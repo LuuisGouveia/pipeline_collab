@@ -152,3 +152,13 @@ def extract_table_lists(folder_path):
     else:
         print("\n[AVISO] Nenhum dado válido pôde ser extraído dos arquivos.")
         return pd.DataFrame()
+
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+lists_path = os.path.join(project_root, "data", "lists") 
+
+input_folder = lists_path  # Pasta contendo os arquivos CSV/tabulares de listas
+extracted_df = extract_table_lists(input_folder)
+print("\nPrévia dos dados extraídos:")
+print(extracted_df.head())

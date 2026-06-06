@@ -46,6 +46,15 @@ def extract_data_table_note(file_path):
             line_header_index = idx
             print(f"Header line found at index: {line_header_index}")
             break
+        if 'cliente' in line_text_unique.lower() or 'dentista' in line_text_unique.lower():
+            # Procura pelas palavras 'cliente' ou 'dentista', seguidas opcionalmente de dois-pontos e espaços
+            # O (.*) no final captura todo o restante do texto da linha
+            match_client = re.search(r'(?:cliente|dentista)\s*:?\s*(.+)', line_text_unique, re.IGNORECASE)
+
+            if match_client:
+                # Captura o primeiro grupo e limpa espaços extras e aspas que costumam vir de arquivos CSV
+                client_name = match_client.group(1).replace('"', '').replace("'", "").strip()
+                print(f"Extracted client name: {client_name}")
             
         if not client_name:
             match_client = re.search(r'([A-Za-z]+)', line_text_unique)
@@ -161,3 +170,10 @@ def extract_table_notes(folder_path):
         print("\n[AVISO] Nenhum dado válido pôde ser extraído dos arquivos.")
         return pd.DataFrame()
 
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+notes_path = os.path.join(project_root, "data", "notes")
+extracted_df = extract_table_notes(notes_path)
+print("\nPrévia dos dados extraídos:")
+print(extracted_df.head())
