@@ -2,23 +2,31 @@ import os
 import re
 import json
 import time
+import requests
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
 from pypdf import PdfReader
 import pandas as pd
+import numpy as np
 
 # --- BLOCO DE INICIALIZAÇÃO ULTRA-ROBUSTO DO ARQUIVO .ENV ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 working_dir = os.getcwd()
 
-# Lista de caminhos possíveis para o arquivo .env
+# Lista de caminhos possíveis para o ficheiro .env
 possible_env_paths = [
-    os.path.join(current_dir, 'config', '.env'),         # Se o script estiver na raiz e o .env em raiz/config/.env
-    os.path.join(current_dir, '..', 'config', '.env'),    # Se o script estiver em raiz/src e o .env em raiz/config/.env
-    os.path.join(current_dir, '.env'),                    # Se o .env estiver na mesma pasta do script
-    os.path.join(working_dir, 'config', '.env'),         # Com base no diretório ativo do terminal
-    os.path.join(working_dir, '.env'),                    # Se o .env estiver no diretório atual do terminal
+    os.path.join(
+        current_dir, "config", ".env"
+    ),  # Se o script estiver na raiz e o .env em raiz/config/.env
+    os.path.join(
+        current_dir, "..", "config", ".env"
+    ),  # Se o script estiver em raiz/src e o .env em raiz/config/.env
+    os.path.join(current_dir, ".env"),  # Se o .env estiver na mesma pasta do script
+    os.path.join(
+        working_dir, "config", ".env"
+    ),  # Com base no diretório ativo do terminal
+    os.path.join(
+        working_dir, ".env"
+    ),  # Se o .env estiver no diretório atual do terminal
 ]
 
 env_loaded = False
@@ -33,39 +41,36 @@ for path in possible_env_paths:
             break
 
 if env_loaded:
-    print(f"[DEBUG] Arquivo .env localizado e carregado com sucesso de: {loaded_path}")
+    print(f"[DEBUG] Ficheiro .env localizado e carregado com sucesso de: {loaded_path}")
 else:
-    print("[AVISO] Não foi possível encontrar o arquivo .env nos caminhos testados.")
+    print("[AVISO] Não foi possível encontrar o ficheiro .env nos caminhos testados.")
     print("[DEBUG] Caminhos verificados:")
     for path in possible_env_paths:
         print(f"  - {os.path.abspath(path)}")
 
-# Resgata a API Key das variáveis de ambiente carregadas
-api_key = os.getenv("GEMINI_API_KEY")
+# Resgata o Token do Hugging Face das variáveis de ambiente carregadas
+hf_token = os.getenv("HF_TOKEN")
 
 # Fallback inteligente caso a variável tenha sido escrita com variações de letras maiúsculas/minúsculas
-if not api_key:
+if not hf_token:
     for env_key, env_value in os.environ.items():
-        if 'gemini' in env_key.lower() and 'key' in env_key.lower():
-            api_key = env_value
-            print(f"[DEBUG] Chave alternativa encontrada: '{env_key}'")
+        if "hf" in env_key.lower() and "token" in env_key.lower():
+            hf_token = env_value
+            print(f"[DEBUG] Chave alternativa de Token HF encontrada: '{env_key}'")
             break
 
-if api_key:
-    # Exibe apenas os caracteres externos da chave no terminal por segurança
-    masked_key = api_key[:6] + "..." + api_key[-4:] if len(api_key) > 10 else "***"
-    print(f"[DEBUG] Chave API carregada com sucesso: {masked_key}")
+if hf_token:
+    masked_key = hf_token[:6] + "..." + hf_token[-4:] if len(hf_token) > 10 else "***"
+    print(f"[DEBUG] Token do Hugging Face carregado com sucesso: {masked_key}")
 else:
-    print("[ERRO CRÍTICO] A variável de ambiente 'GEMINI_API_KEY' não foi encontrada!")
-    print("[DICA] Certifique-se de que seu arquivo .env possui a linha: GEMINI_API_KEY=sua_chave_aqui")
-
-# Inicializa o cliente fornecendo explicitamente a chave
-# Isso contorna problemas de escopo em que a biblioteca falha ao tentar buscar variáveis globais
-client = genai.Client(api_key=api_key)
+    print("[ERRO CRÍTICO] A variável de ambiente 'HF_TOKEN' não foi encontrada!")
+    print(
+        "[DICA] Certifica-te de que o teu ficheiro .env possui a linha: HF_TOKEN=o_teu_token_aqui"
+    )
 
 
 def extract_pdf_text(pdf_path):
-    """Extrai todo o texto legível de um arquivo PDF."""
+    """Extrai todo o texto legível de um ficheiro PDF."""
     full_text = ""
     try:
         reader = PdfReader(pdf_path)
@@ -80,7 +85,7 @@ def extract_pdf_text(pdf_path):
 
 def extract_date_from_filename(filename):
     """
-    Tenta extrair uma data do nome do arquivo no formato DD MM YY ou DD MM YYYY.
+    Tenta extrair uma data do nome do ficheiro no formato DD MM YY ou DD MM YYYY.
     Exemplo: 'CARLOS 01 10 20.pdf' -> '01/10/2020'
     Exemplo: 'Aline Vasconcelos 31 08 2023.pdf' -> '31/08/2023'
     """
@@ -94,78 +99,101 @@ def extract_date_from_filename(filename):
     return None
 
 
-def structure_data_with_gemini(raw_text):
+def structure_data_with_huggingface(raw_text):
     """
-    Envia o texto bruto ao Gemini e solicita retorno estritamente estruturado em JSON.
-    Implementa retentativas com backoff exponencial para lidar de forma robusta com limites de taxa.
+    Envia o texto bruto para um modelo gratuito do Hugging Face (via API de Inferência)
+    e solicita um retorno estruturado em JSON com as chaves definidas.
+    Implementa retentativas com backoff exponencial para lidar com tempos de carregamento do modelo.
     """
-    output_schema = types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "services": types.Schema(
-                type=types.Type.ARRAY,
-                items=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={
-                        "dentist_client": types.Schema(type=types.Type.STRING),
-                        "patient": types.Schema(type=types.Type.STRING),
-                        "work_performed": types.Schema(type=types.Type.STRING),
-                        "unit_value": types.Schema(type=types.Type.STRING),
-                        "quantity": types.Schema(type=types.Type.INTEGER),
-                        "total_value": types.Schema(type=types.Type.STRING),
-                        "delivery_date": types.Schema(type=types.Type.STRING, nullable=True) 
-                    },
-                    required=["dentist_client", "patient", "work_performed", "unit_value", "quantity", "total_value"]
-                )
-            )
-        },
-        required=["services"]
+    if not hf_token:
+        print("[ERRO] Token do Hugging Face (HF_TOKEN) não configurado!")
+        return {"services": []}
+
+    # Utilizamos o Qwen 2.5 72B Instruct, que é excelente para JSON e português
+    model_id = "Qwen/Qwen2.5-72B-Instruct"
+    api_url = f"https://router.huggingface.co/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {hf_token}",
+        "Content-Type": "application/json",
+    }
+
+    # Prompt de sistema definindo o esquema esperado de forma explícita
+    system_prompt = (
+        "És um assistente especialista em extração de dados estruturados em formato JSON.\n"
+        "Deves analisar o relatório de prótese dentária enviado e retornar um objeto JSON estrito com o seguinte esquema:\n"
+        "{\n"
+        '  "services": [\n'
+        "    {\n"
+        '      "dentist_client": "Nome do dentista / cliente",\n'
+        '      "patient": "Nome do paciente (se não especificado, usa \'Não especificado\')",\n'
+        '      "work_performed": "Descrição do trabalho executado",\n'
+        '      "unit_value": "Valor unitário formatado como R$ X.XXX,XX (se não explícito, divide o valor total pela quantidade)",\n'
+        '      "quantity": 1,\n'
+        '      "total_value": "Valor total formatado como R$ X.XXX,XX",\n'
+        '      "delivery_date": "Data de entrega no formato DD/MM/YYYY ou null se não houver na tabela"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "Retorna estritamente apenas o objeto JSON. Não adiciones blocos de código markdown adicionais ou textos introdutórios/explicativos."
     )
 
-    prompt = (
-        "Você é um assistente especialista em extração de dados de relatórios de prótese dentária.\n"
-        "Analise o texto bruto do PDF e extraia cada serviço listado para o formato JSON esperado.\n"
-        "Mapeie as informações para as seguintes chaves em inglês:\n"
-        "- 'dentist_client': Nome do dentista / cliente.\n"
-        "- 'patient': Nome do paciente (se não especificado, use 'Não especificado').\n"
-        "- 'work_performed': Descrição do trabalho executado.\n"
-        "- 'unit_value': Valor unitário. Se não estiver explícito, divida o valor total pela quantidade para encontrá-lo.\n"
-        "- 'quantity': Quantidade (número inteiro).\n"
-        "- 'total_value': Valor total do item.\n"
-        "- 'delivery_date': Data de entrega (sob a coluna 'Dt Entregue', 'Dt Entrada Dt Entregue Qtd' ou similares).\n"
-        "  Se houver data individual na tabela, coloque-a no formato DD/MM/YYYY. Se não houver, deixe como null.\n\n"
-        "Regras de formatação:\n"
-        "- Formate todos os valores monetários como 'R$ X.XXX,XX'."
-    )
+    # Removido 'response_format' para evitar o erro HTTP 400 em servidores serverless compartilhados
+    payload = {
+        "model": model_id,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Texto do relatório:\n{raw_text}"},
+        ],
+        "temperature": 0.1,
+    }
 
     max_retries = 5
-    wait_times = [1, 2, 4, 8, 16]
+    wait_times = [3, 6, 12, 24, 48]
 
     for attempt in range(max_retries):
         try:
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=[prompt, raw_text],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=output_schema,
-                    temperature=0.1
-                ),
-            )
-            return json.loads(response.text)
-            
+            response = requests.post(api_url, headers=headers, json=payload, timeout=45)
+
+            if response.status_code == 200:
+                result = response.json()
+                content = result["choices"][0]["message"]["content"].strip()
+
+                # Resiliência: Extrai apenas a string contida entre a primeira chave '{' e a última '}'
+                # Isso impede falhas caso o modelo decida retornar markdown como "```json ... ```" ou tags adicionais
+                first_brace = content.find("{")
+                last_brace = content.rfind("}")
+                if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                    content = content[first_brace : last_brace + 1]
+
+                return json.loads(content)
+
+            elif response.status_code == 503:
+                print(
+                    f"[INFO] O modelo {model_id} está a carregar no Hugging Face. Nova tentativa {attempt + 1}/{max_retries}..."
+                )
+
+            else:
+                print(
+                    f"[AVISO] Resposta inesperada da API Hugging Face: {response.status_code}. Detalhes: {response.text}"
+                )
+
         except Exception as e:
             if attempt == max_retries - 1:
-                print(f"\n[ERRO] Não foi possível estruturar os dados deste PDF após {max_retries} tentativas. Detalhes: {e}")
+                print(
+                    f"\n[ERRO] Falha crítica ao comunicar com o Hugging Face após {max_retries} tentativas: {e}"
+                )
                 return {"services": []}
-            
-            time.sleep(wait_times[attempt])
+
+        time.sleep(wait_times[attempt])
+
+    return {"services": []}
 
 
-def extract_pdf(source_dir, delay_between_calls=3.0):
+def extract_pdf(source_dir, delay_between_calls=3.0, parquet_path=None):
     """
     Varre a pasta de PDFs de origem, extrai os dados usando Inteligência Artificial,
-    aplica regras de tratamento síncronas e retorna um Pandas DataFrame unificado.
+    aplica regras de tratamento síncronas, opcionalmente exporta para Parquet e retorna um Pandas DataFrame.
     """
     all_services = []
 
@@ -173,34 +201,38 @@ def extract_pdf(source_dir, delay_between_calls=3.0):
         print(f"Aviso: A pasta de origem '{source_dir}' não existe.")
         return pd.DataFrame()
 
-    files = [f for f in os.listdir(source_dir) if f.lower().endswith('.pdf')]
-    
+    files = [f for f in os.listdir(source_dir) if f.lower().endswith(".pdf")]
+
     if not files:
-        print(f"Aviso: Nenhum arquivo PDF encontrado na pasta '{source_dir}'.")
+        print(f"Aviso: Nenhum ficheiro PDF encontrado na pasta '{source_dir}'.")
         return pd.DataFrame()
 
     total_files = len(files)
-    print(f"Iniciando o processamento de {total_files} arquivos PDF...")
+    print(f"Iniciando o processamento de {total_files} ficheiros PDF...")
 
     for idx, filename in enumerate(files, start=1):
         full_path = os.path.join(source_dir, filename)
         print(f"[{idx}/{total_files}] Processando: {filename}")
-        
+
         filename_date_fallback = extract_date_from_filename(filename)
         raw_text = extract_pdf_text(full_path)
-        
+
         if not raw_text.strip():
-            print(f"Aviso: O arquivo '{filename}' está sem texto ou corrompido.")
+            print(f"Aviso: O ficheiro '{filename}' está sem texto ou corrompido.")
             continue
 
-        json_data = structure_data_with_gemini(raw_text)
+        json_data = structure_data_with_huggingface(raw_text)
 
         for service in json_data.get("services", []):
             final_date = service.get("delivery_date")
 
             if not final_date or final_date.strip() == "":
-                final_date = filename_date_fallback if filename_date_fallback else "Não especificada"
-                
+                final_date = (
+                    filename_date_fallback
+                    if filename_date_fallback
+                    else "Não especificada"
+                )
+
             service["final_delivery_date"] = final_date
             service["source_file"] = filename
             all_services.append(service)
@@ -212,30 +244,48 @@ def extract_pdf(source_dir, delay_between_calls=3.0):
         df = pd.DataFrame(all_services)
 
         ordered_columns = [
-            "dentist_client", "patient", "work_performed", 
-            "unit_value", "quantity", "total_value", "final_delivery_date"
+            "dentist_client",
+            "patient",
+            "work_performed",
+            "unit_value",
+            "quantity",
+            "total_value",
+            "final_delivery_date",
+            "source_file",
         ]
         df = df[ordered_columns]
         df.columns = [
-            "Cliente (Dentista)", "Paciente", "Trabalho Executado", 
-            "Valor Unitário", "Quantidade", "Valor Total", "Data de Entrega"
+            "Cliente (Dentista)",
+            "Paciente",
+            "Trabalho Executado",
+            "Valor Unitário",
+            "Quantidade",
+            "Valor Total",
+            "Data de Entrega",
+            "Arquivo de Origem",
         ]
-        
-        print(f"\nProcessamento concluído com sucesso! {len(df)} registros extraídos.")
+
+        if parquet_path:
+            try:
+                df.to_parquet(parquet_path, index=False)
+                print(
+                    f"[SUCESSO] Dados consolidados e salvos em formato Parquet: {parquet_path}"
+                )
+            except Exception as e:
+                print(f"[ERRO] Falha ao salvar em formato Parquet: {e}")
+
+        print(f"\nProcessamento concluído com sucesso! {len(df)} registos extraídos.")
         return df
     else:
         print("\nAviso: Nenhum dado foi encontrado nos PDFs processados.")
         return pd.DataFrame()
 
 
-# Exemplo de uso local
 if __name__ == "__main__":
-    # Ajuste o caminho da pasta de entrada conforme seu ambiente
-    INPUT_DIR = "./data/pdf"  # Pasta contendo os arquivos PDF a serem processados
-    
-    # Executa a extração
-    df_result = extract_pdf(INPUT_DIR, delay_between_calls=3.0)
-    
-    if not df_result.empty:
-        print("\nVisualização das primeiras linhas extraídas:")
-        print(df_result.head())
+    # Exemplo de execução direta do script para teste
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    pdf_path = os.path.join(project_root, "data", "pdf")
+    df_extracted = extract_pdf(pdf_path, delay_between_calls=3.0)
+    print(df_extracted.head())
