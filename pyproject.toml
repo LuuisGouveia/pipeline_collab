@@ -17,4 +17,4 @@ dependencies = [
 ]
 
 [project.scripts]
-pipeline-collab = "pipeline_collab.main:main"
+pipeline-collab = "pipeline_collab.src:main"

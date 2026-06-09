@@ -2,7 +2,7 @@ import os
 import numpy as np
 import pandas as pd
 from pypdf import PdfReader
-from Extract import utils
+import utils
 
 
 # ==============================================================================
@@ -221,14 +221,24 @@ def extract_data_table_list(file_path):
             df_data[col] = df_data[col].apply(utils.clean_monetary_values)
 
     df_final = pd.DataFrame(index=df_data.index)
+    # Coleta a data de entrega interna da tabela
     date_col = (
         "DATA ENTREGA"
         if "DATA ENTREGA" in df_data.columns
         else "ENTREGA" if "ENTREGA" in df_data.columns else None
     )
-    df_final["data_entrega"] = (
-        pd.to_datetime(df_data[date_col], errors="coerce") if date_col else pd.NaT
-    )
+    if date_col:
+        df_final["data_entrega"] = pd.to_datetime(df_data[date_col], errors="coerce")
+    else:
+        df_final["data_entrega"] = pd.NaT
+
+    # --- 🌟 CORREÇÃO / FALLBACK INTELIGENTE 🌟 ---
+    # Se a coluna não existia ou se os valores internos vieram nulos (NaT), busca no nome do arquivo
+    filename_date = utils.extract_date_from_filename(file_name)
+    if filename_date:
+        df_final["data_entrega"] = df_final["data_entrega"].fillna(
+            pd.to_datetime(filename_date)
+        )
 
     df_final["cliente_dentista"] = client_name
     df_final["paciente"] = (
