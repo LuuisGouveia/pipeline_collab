@@ -9,4 +9,4 @@ df = pd.read_parquet(
         "dim_servicos.parquet",
     )
 )
-print(df.tail())
+print(df.head(20))

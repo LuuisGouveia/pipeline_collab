@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 import numpy as np
+import re
 import utils
 
 # Configuração de caminhos para as camadas
@@ -38,8 +39,84 @@ def save_to_bronze(df_notes, df_pdfs, df_lists):
 # ==============================================================================
 # 2. CAMADA SILVER (Padronização, Limpeza e Enriquecimento)
 # ==============================================================================
+# ==============================================================================
+# DICIONÁRIO DE PADRONIZAÇÃO DE TRABALHOS (REGRAS DE NEGÓCIO)
+# ==============================================================================
+def padronizar_trabalhos(descricao_original):
+    """
+    Recebe a descrição do trabalho bruto, descarta lançamentos financeiros
+    (débitos/valores), avalia as palavras-chave e retorna o termo técnico padronizado.
+    """
+    if pd.isna(descricao_original):
+        return "Não Especificado"
+
+    # Converte para minúsculo para garantir o casamento perfeito das palavras
+    texto = str(descricao_original).lower().strip()
+
+    # 🛑 REGRA DE EXCLUSÃO: Se for um registro de débito ou cobrança genérica, marcamos para exclusão
+    if re.search(r"d[eé]bito|valor", texto):
+        return "EXCLUIR_REGISTRO_FINANCEIRO"
+
+    # Ordem das regras importa: Termos mais específicos vêm antes dos mais gerais!
+    regras = [
+        # Protocolos e Implantes Específicos
+        (
+            r"protocolo\s+çer[aâ]mic|protocolo\s+cer[aâ]mic",
+            "Protese Protocolo Metalocerâmica",
+        ),
+        (r"protocolo", "Protese Protocolo Acrilica"),
+        (
+            r"coroa\s+implante|çer[aâ]mica\s+implante|cer[aâ]mica\s+implante|metalocer[aâ]mica\s+implante",
+            "PSI - Coroa Metalocerâmica Sobre Implante",
+        ),
+        # Dissilicato (E-max e variações)
+        (
+            r"emax|e-max|dissilicato|litio|l[ií]tio|bloco\s+de\s+emax|laminado|facetas",
+            "Coroa/Bloco/Laminado em Dissilicato",
+        ),
+        # Resinas (Blocos e Coroas Fotopolimerizáveis)
+        (
+            r"bloco\s+em\s+resina\s+foto|bloco\s+em\s+res\.\s+foto|bloco\s+em\s+resina\s+fotopolimeriz[aá]vel",
+            "Bloco em Resina Fotopolimerizável",
+        ),
+        # 🌟 Atualizado para pegar: Coroa Res Foto, Coroa res. Foto e variações anteriores
+        (
+            r"coroa\s+em\s+resina\s+foto|coroa\s+em\s+res\.\s+foto|coroa\s+res\.?\s+foto|coroa\s+em\s+resina\s+fotopolimeriz[aá]vel",
+            "Coroa em Resina Fotopolimerizável",
+        ),
+        # Pontes e Próteses Removíveis
+        (
+            r"perereca|dentadura\s+provis[oó]ria|ppr\s+provis[oó]ria",
+            "Protese Parcial Removivel Provisória",
+        ),
+        (r"ppr|ponte\s+m[oó]vel|estrutura\s+de", "Protese Parcial Removivel"),
+        (r"fixa|adesiva", "Ponte Fixa Metalocerâmica"),
+        # Próteses Totais e Provisórios Gerais
+        (r"dentadura", "Protese Total"),
+        # 🌟 Atualizado para pegar: Coroa Res, Coroa Res. e variações anteriores
+        (
+            r"provis[oó]rio|jaqueta\s+acril[ií]ca|coroa\s+em\s+resina|coroa\s+res\.?$",
+            "Provisório",
+        ),
+        # Coroa Metalocerâmica Geral (Colocado abaixo por conter a palavra "ceramica")
+        (
+            r"coroa\s+metalocer[aâ]mica|çer[aâ]mica|cer[aâ]mica|metalocer[aâ]mica",
+            "Coroa Metalocerâmica",
+        ),
+    ]
+
+    for padrao, nome_padronizado in regras:
+        if re.search(padrao, texto):
+            return nome_padronizado
+
+    return str(descricao_original).strip().title()
+
+
+# ==============================================================================
+# 2. CAMADA SILVER (Atualizada com a padronização de serviços)
+# ==============================================================================
 def _clean_text_column(series):
-    """Função interna para padronizar textos (Title Case, sem espaços extras)"""
+    """Função interna para padronizar textos gerais (Clientes/Pacientes)"""
     return (
         series.astype(str)
         .str.strip()
@@ -49,12 +126,7 @@ def _clean_text_column(series):
 
 
 def process_to_silver():
-    """
-    Lê os dados da Bronze, unifica os schemas de fontes diferentes,
-    limpa strings e garante a tipagem correta de cada coluna.
-    """
     print("\n--- Transformando dados para a Camada Silver ---")
-
     silver_dfs = []
 
     # 2.1 Processando Notas CSV
@@ -65,7 +137,12 @@ def process_to_silver():
         df_silver["data_entrega"] = pd.to_datetime(df["data_entrega"], errors="coerce")
         df_silver["cliente_nome"] = _clean_text_column(df["cliente_dentista"])
         df_silver["paciente_nome"] = _clean_text_column(df["paciente"])
-        df_silver["servico_descricao"] = _clean_text_column(df["servico_trabalho"])
+
+        # 🌟 APLICANDO A PADRONIZAÇÃO AQUI
+        df_silver["servico_descricao"] = df["servico_trabalho"].apply(
+            padronizar_trabalhos
+        )
+
         df_silver["quantidade"] = (
             pd.to_numeric(df["quantidade"], errors="coerce").fillna(1).astype(int)
         )
@@ -87,7 +164,12 @@ def process_to_silver():
         df_silver["data_entrega"] = pd.to_datetime(df["data_entrega"], errors="coerce")
         df_silver["cliente_nome"] = _clean_text_column(df["cliente_dentista"])
         df_silver["paciente_nome"] = _clean_text_column(df["paciente"])
-        df_silver["servico_descricao"] = _clean_text_column(df["servico_trabalho"])
+
+        # 🌟 APLICANDO A PADRONIZAÇÃO AQUI
+        df_silver["servico_descricao"] = df["servico_trabalho"].apply(
+            padronizar_trabalhos
+        )
+
         df_silver["quantidade"] = (
             pd.to_numeric(df["quantidade"], errors="coerce").fillna(1).astype(int)
         )
@@ -106,23 +188,24 @@ def process_to_silver():
     if os.path.exists(path_pdfs):
         df = pd.read_parquet(path_pdfs)
         df_silver = pd.DataFrame()
-        # Tratamento da data vinda da IA (converte formato DD/MM/YYYY se necessário)
         df_silver["data_entrega"] = pd.to_datetime(
             df["Data de Entrega"], dayfirst=True, errors="coerce"
         )
         df_silver["cliente_nome"] = _clean_text_column(df["Cliente (Dentista)"])
         df_silver["paciente_nome"] = _clean_text_column(df["Paciente"])
-        df_silver["servico_descricao"] = _clean_text_column(df["Trabalho Executado"])
+
+        # 🌟 APLICANDO A PADRONIZAÇÃO AQUI (Mesmo vindo da IA, garantimos a consistência estrita)
+        df_silver["servico_descricao"] = df["Trabalho Executado"].apply(
+            padronizar_trabalhos
+        )
+
         df_silver["quantidade"] = (
             pd.to_numeric(df["Quantidade"], errors="coerce").fillna(1).astype(int)
         )
-
-        # Como os valores da IA vêm formatados com 'R$', limpamos usando a utilidade existente
         df_silver["valor_unitario"] = df["Valor Unitário"].apply(
             utils.clean_monetary_values
         )
         df_silver["valor_total"] = df["Valor Total"].apply(utils.clean_monetary_values)
-
         df_silver["arquivo_origem"] = df["Arquivo de Origem"]
         df_silver["tipo_fonte"] = "PDF Inteligente"
         silver_dfs.append(df_silver)
@@ -134,12 +217,28 @@ def process_to_silver():
     # Consolida as 3 fontes em uma única tabela Silver padronizada
     df_silver_final = pd.concat(silver_dfs, ignore_index=True)
 
-    # --- 🛡️ REDE DE SEGURANÇA GLOBAL (DATA QUALITY) 🛡️ ---
-    # Se qualquer registro de qualquer fonte ficou com data NaT, tenta pescar a data pelo nome do arquivo
-    if df_silver_final["data_entrega"].isna().any():
+    # 🌟 FILTRO DE DATA QUALITY: Elimina os registros de Débito/Valor detectados no mapeamento
+    linhas_antes = len(df_silver_final)
+    df_silver_final = df_silver_final[
+        df_silver_final["servico_descricao"] != "EXCLUIR_REGISTRO_FINANCEIRO"
+    ]
+    linhas_depois = len(df_silver_final)
+
+    if linhas_antes != linhas_depois:
         print(
-            "[DATA QUALITY] Identificadas datas nulas (NaT). Aplicando correção via nome do arquivo de origem..."
+            f"[DATA QUALITY] Foram eliminados {linhas_antes - linhas_depois} registros de débitos/valores financeiros."
         )
+
+    # Preenche fallbacks de segurança para nulos após a limpeza
+    df_silver_final["cliente_nome"] = df_silver_final["cliente_nome"].fillna(
+        "Desconhecido"
+    )
+    df_silver_final["paciente_nome"] = df_silver_final["paciente_nome"].fillna(
+        "Não Especificado"
+    )
+
+    # --- REDE DE SEGURANÇA GLOBAL DE DATAS (Mantida do passo anterior) ---
+    if df_silver_final["data_entrega"].isna().any():
 
         def preencher_nat_pelo_nome(row):
             if pd.isna(row["data_entrega"]):
@@ -152,24 +251,10 @@ def process_to_silver():
             preencher_nat_pelo_nome, axis=1
         )
 
-    # Consolida as 3 fontes em uma única tabela Silver padronizada
-    df_silver_final = pd.concat(silver_dfs, ignore_index=True)
-
-    # Preenche fallbacks de segurança para nulos após a limpeza
-    df_silver_final["cliente_nome"] = df_silver_final["cliente_nome"].fillna(
-        "Desconhecido"
-    )
-    df_silver_final["paciente_nome"] = df_silver_final["paciente_nome"].fillna(
-        "Não Especificado"
-    )
-    df_silver_final["servico_descricao"] = df_silver_final["servico_descricao"].fillna(
-        "Não Especificado"
-    )
-
     # Adiciona coluna de auditoria do pipeline
     df_silver_final["data_processamento"] = pd.Timestamp.now()
 
-    # Remove duplicados que possam ter passado entre as consolidações
+    # Remove duplicados residuais
     df_silver_final.drop_duplicates(
         subset=[
             "data_entrega",
