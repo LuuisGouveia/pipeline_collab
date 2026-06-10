@@ -42,22 +42,34 @@ def save_to_bronze(df_notes, df_pdfs, df_lists):
 # ==============================================================================
 # DICIONÁRIO DE PADRONIZAÇÃO DE TRABALHOS (REGRAS DE NEGÓCIO)
 # ==============================================================================
+# ==============================================================================
+# DICIONÁRIO DE PADRONIZAÇÃO E LIMPEZA DE TRABALHOS (REGRAS DE NEGÓCIO)
+# ==============================================================================
 def padronizar_trabalhos(descricao_original):
     """
-    Recebe a descrição do trabalho bruto, descarta lançamentos financeiros
-    (débitos/valores), avalia as palavras-chave e retorna o termo técnico padronizado.
+    Remove especificações anatômicas (dentes, posições), descarta débitos,
+    e agrupa procedimentos homólogos usando Regex avançado.
     """
     if pd.isna(descricao_original):
         return "Não Especificado"
 
-    # Converte para minúsculo para garantir o casamento perfeito das palavras
+    # 1. Limpeza inicial e conversão para minúsculo
     texto = str(descricao_original).lower().strip()
 
-    # 🛑 REGRA DE EXCLUSÃO: Se for um registro de débito ou cobrança genérica, marcamos para exclusão
+    # 🛑 REGRA DE EXCLUSÃO PRECOCE: Lançamentos financeiros residuais
     if re.search(r"d[eé]bito|valor", texto):
         return "EXCLUIR_REGISTRO_FINANCEIRO"
 
-    # Ordem das regras importa: Termos mais específicos vêm antes dos mais gerais!
+    # 🦷 LIMPEZA ANATÔMICA (Stopwords odontológicas de posição/anatomia e plurais)
+    # Remove as palavras e os pontos finais colados nelas (ex: "inf." vira "")
+    texto = re.sub(r"\b(molar|superior|inferior|inf|sup|pos|ant)\b\.?", "", texto)
+    # Normaliza plurais comuns para o singular no início para facilitar o match
+    texto = re.sub(r"\bblocos\b", "bloco", texto)
+    texto = re.sub(r"\bcoroas\b", "coroa", texto)
+    # Limpa espaços duplos gerados pelas remoções
+    texto = re.sub(r"\s+", " ", texto).strip()
+
+    # 2. Matriz de regras hierárquicas de negócio
     regras = [
         # Protocolos e Implantes Específicos
         (
@@ -69,6 +81,9 @@ def padronizar_trabalhos(descricao_original):
             r"coroa\s+implante|çer[aâ]mica\s+implante|cer[aâ]mica\s+implante|metalocer[aâ]mica\s+implante",
             "PSI - Coroa Metalocerâmica Sobre Implante",
         ),
+        # Componentes e Barras Oring
+        (r"ucla\s*\+\s*parafuso", "Ucla + Parafuso"),
+        (r"barra\s+oring", "Barra Oring"),
         # Dissilicato (E-max e variações)
         (
             r"emax|e-max|dissilicato|litio|l[ií]tio|bloco\s+de\s+emax|laminado|facetas",
@@ -76,12 +91,11 @@ def padronizar_trabalhos(descricao_original):
         ),
         # Resinas (Blocos e Coroas Fotopolimerizáveis)
         (
-            r"bloco\s+em\s+resina\s+foto|bloco\s+em\s+res\.\s+foto|bloco\s+em\s+resina\s+fotopolimeriz[aá]vel",
+            r"bloco\s+em\s+resina\s+foto|bloco\s+em\s+res\.\s+foto|bloco\s+res\.?\s+foto|bloco\s+resina\s+foto",
             "Bloco em Resina Fotopolimerizável",
         ),
-        # 🌟 Atualizado para pegar: Coroa Res Foto, Coroa res. Foto e variações anteriores
         (
-            r"coroa\s+em\s+resina\s+foto|coroa\s+em\s+res\.\s+foto|coroa\s+res\.?\s+foto|coroa\s+em\s+resina\s+fotopolimeriz[aá]vel",
+            r"coroa\s+em\s+resina\s+foto|coroa\s+em\s+res\.\s+foto|coroa\s+res\.?\s+foto|coroa\s+resina\s+foto|coroa\s+em\s+resina\s+fotopolimeriz[aá]vel",
             "Coroa em Resina Fotopolimerizável",
         ),
         # Pontes e Próteses Removíveis
@@ -91,24 +105,30 @@ def padronizar_trabalhos(descricao_original):
         ),
         (r"ppr|ponte\s+m[oó]vel|estrutura\s+de", "Protese Parcial Removivel"),
         (r"fixa|adesiva", "Ponte Fixa Metalocerâmica"),
-        # Próteses Totais e Provisórios Gerais
+        # Próteses Totais, Provisórios e Soldas
         (r"dentadura", "Protese Total"),
-        # 🌟 Atualizado para pegar: Coroa Res, Coroa Res. e variações anteriores
         (
-            r"provis[oó]rio|jaqueta\s+acril[ií]ca|coroa\s+em\s+resina|coroa\s+res\.?$",
+            r"provis[oó]rio|provisoriso|jaqueta\s+acril[ií]ca|coroa\s+em\s+resina|coroa\s+res\.?$",
             "Provisório",
         ),
-        # Coroa Metalocerâmica Geral (Colocado abaixo por conter a palavra "ceramica")
+        (r"solda|ponto\s+de\s+solda", "Ponto de Solda"),
+        # Núcleos e Fundições
+        (r"fundi[çc][ãa]o\s+de\s+n[uú]cleo|n[uú]cleo", "Fundição de Núcleo"),
+        # Coroa Metalocerâmica Geral (Mantido abaixo por ser mais genérico)
         (
-            r"coroa\s+metalocer[aâ]mica|çer[aâ]mica|cer[aâ]mica|metalocer[aâ]mica",
+            r"coroa\s+metalocer[aâ]mica|çer[aâ]mica|cer[aâ]mica|metalocer[aâ]mica|coroa\s+resina",
             "Coroa Metalocerâmica",
         ),
+        # Placas
+        (r"placa\s+d?e?clareamento", "Placa Clareamento"),
     ]
 
+    # Aplica as regras de agrupamento por padrão Regex
     for padrao, nome_padronizado in regras:
         if re.search(padrao, texto):
             return nome_padronizado
 
+    # Fallback caso não dê match em nenhum padrão estruturado
     return str(descricao_original).strip().title()
 
 
