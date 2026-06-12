@@ -1,5 +1,5 @@
 [project]
-name = "pipeline-collab"
+name = "pipeline_collab"
 version = "0.1.0"
 description = "Pipeline for Prothesis Laboratory"
 readme = "README.md"
@@ -17,4 +17,13 @@ dependencies = [
 ]
 
 [project.scripts]
-pipeline-collab = "pipeline_collab.src:main"
+pipeline_collab = "pipeline_collab.src:main"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.17",
+]
+
+[tool.uv]
+package = true
+

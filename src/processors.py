@@ -8,6 +8,44 @@ import utils
 # ==============================================================================
 # BLOCO 1: PROCESSADOR DE NOTAS DE SERVIÇO (CSV TABULAR)
 # ==============================================================================
+def extract_report(file_path):
+
+    file_name = os.path.basename(file_path)
+    print(f"Processing file: {file_name}")
+
+    try:
+        df_raw = pd.read_csv(file_path)
+    except Exception as e:
+        print(f"[ERRO] Falha ao carregar o arquivo {file_name}: {e}")
+        return None
+
+    df_final = df_raw[
+        [
+            "data prazo dentista",
+            "cliente",
+            "paciente",
+            "servico",
+            "valor",
+            "valor total",
+            "quantidade",
+        ]
+    ].rename(
+        columns={
+            "data prazo dentista": "data_entrega",
+            "cliente": "cliente_dentista",
+            "paciente": "paciente",
+            "servico": "servico_trabalho",
+            "valor": "valor_unitario",
+            "valor total": "valor_total",
+            "quantidade": "quantidade",
+        }
+    )
+
+    df_final["paciente"] = df_final["paciente"].fillna("Não Informado")
+
+    return df_final
+
+
 def extract_data_table_note(file_path):
     file_name = os.path.basename(file_path)
     print(f"Processing file: {file_name}")
@@ -89,7 +127,7 @@ def extract_data_table_note(file_path):
     df_final["data_entrega"] = pd.to_datetime(data_final_str)
     df_final["cliente_dentista"] = client_name
     df_final["paciente"] = (
-        df_data["Paciente"] if "Paciente" in df_data.columns else "Não especificado"
+        df_data["Paciente"] if "Paciente" in df_data.columns else "Não Informado"
     )
     df_final["servico_trabalho"] = (
         df_data["Trabalho"] if "Trabalho" in df_data.columns else "Não especificado"
@@ -205,7 +243,7 @@ def extract_data_table_list(file_path):
         df_data = df_data[
             df_data["PACIENTE"].astype(str).str.strip().str.lower() != "paciente"
         ]
-        df_data["PACIENTE"] = df_data["PACIENTE"].fillna("Desconhecido").ffill()
+        df_data["PACIENTE"] = df_data["PACIENTE"].fillna("Não Informado").ffill()
 
     for col in ["PACIENTE", work_col]:
         if col and col in df_data.columns:
@@ -294,6 +332,12 @@ def batch_process_folder(folder_path, process_type, parquet_path=None, delay=0.0
         return pd.DataFrame()
 
     all_data = []
+
+    # 🌟 CORREÇÃO: Inicializa as variáveis de controle do lote PDF ANTES do loop principal
+    lote_atual = []
+    contador_lote = 1
+    LOTE_TAMANHO = 40
+
     print(
         f"Iniciando varredura em lote ({process_type.upper()}): {len(files)} arquivos."
     )
@@ -315,14 +359,48 @@ def batch_process_folder(folder_path, process_type, parquet_path=None, delay=0.0
                     df_file["arquivo_origem"] = filename
                     all_data.append(df_file)
 
+            elif process_type == "report_csv":
+                df_file = extract_report(file_path)
+                if df_file is not None and not df_file.empty:
+                    df_file["arquivo_origem"] = filename
+                    all_data.append(df_file)
+
+            # 🌟 CORREÇÃO: Removeu-se o segundo laço "for". Agora usa o fluxo do loop principal.
             elif process_type == "pdf":
                 import time
 
-                services = process_single_pdf(folder_path, filename)
-                if services:
-                    all_data.extend(services)
-                if idx < len(files) and delay > 0:
-                    time.sleep(delay)
+                print(f"Processando PDF via IA: {filename}")
+
+                try:
+                    services = process_single_pdf(folder_path, filename)
+                    if services:
+                        lote_atual.extend(services)
+                        all_data.extend(services)  # Mantém no acumulado geral
+
+                    # Delay básico entre chamadas
+                    if idx < len(files) and delay > 0:
+                        time.sleep(delay)
+
+                except Exception as e:
+                    print(f"[ERRO] Falha ao processar PDF {filename}: {e}")
+
+                # 💾 SALVAMENTO INCREMENTAL: Executado usando o contexto do loop principal
+                if idx % LOTE_TAMANHO == 0 or idx == len(files):
+                    if lote_atual:
+                        BRONZE_DIR = os.path.dirname(os.path.abspath(__file__))
+                        df_lote = pd.DataFrame(lote_atual)
+
+                        checkpoint_path = os.path.join(
+                            BRONZE_DIR,
+                            f"checkpoint_lote_{contador_lote}_pdf.parquet",
+                        )
+                        utils.save_to_parquet(df_lote, checkpoint_path)
+                        print(
+                            f"[CHECKPOINT] Lote {contador_lote} salvo com {len(df_lote)} registros."
+                        )
+
+                        lote_atual = []
+                        contador_lote += 1
 
         except Exception as e:
             print(f"[ERRO] Falha crítica ao processar {filename}: {e}")

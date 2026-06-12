@@ -18,7 +18,7 @@ for folder in [BRONZE_DIR, SILVER_DIR, GOLD_DIR]:
 # ==============================================================================
 # 1. CAMADA BRONZE (Persistência dos Dados Brutos)
 # ==============================================================================
-def save_to_bronze(df_notes, df_pdfs, df_lists):
+def save_to_bronze(df_notes, df_pdfs, df_lists, df_reports):
     """
     Salva os dados brutos exatamente como foram extraídos, garantindo que se
     o pipeline falhar adiante, não seja necessário reprocessar os arquivos originais.
@@ -34,14 +34,66 @@ def save_to_bronze(df_notes, df_pdfs, df_lists):
         utils.save_to_parquet(
             df_lists, os.path.join(BRONZE_DIR, "raw_lists_csv.parquet")
         )
+    if df_reports is not None and not df_reports.empty:
+        utils.save_to_parquet(
+            df_reports, os.path.join(BRONZE_DIR, "raw_reports_csv.parquet")
+        )
 
 
 # ==============================================================================
 # 2. CAMADA SILVER (Padronização, Limpeza e Enriquecimento)
 # ==============================================================================
 # ==============================================================================
-# DICIONÁRIO DE PADRONIZAÇÃO DE TRABALHOS (REGRAS DE NEGÓCIO)
+# DICIONÁRIO DE PADRONIZAÇÃO DE CLIENTES (DENTISTAS / CLÍNICAS)
 # ==============================================================================
+def padronizar_clientes(cliente_original):
+    """
+    Recebe o nome do cliente bruto, avalia as palavras-chave (nomes, clínicas,
+    erros de digitação, convênios) e retorna o nome padronizado do parceiro comercial.
+    """
+    if pd.isna(cliente_original):
+        return "Desconhecido"
+
+    # Converte para minúsculo e remove acentos/caracteres residuais para o match
+    texto = str(cliente_original).lower().strip()
+
+    # Matriz de regras de negócio para clientes
+    regras_clientes = [
+        # Clínicas e Grupos Específicos
+        (r"bem|fernando|viver", "Clinica Bem Viver Odonto"),
+        (r"odontologic", "Odontologic System"),
+        (r"sindicato", "Dr Rafael Lunardelo"),
+        (r"para[ií]ba|thayn[aá]|tayn[aá]|oitty|oity", "Oitty Odontologia"),
+        (r"mais|sorrisos|katia|k[aá]tia|ricardo", "Mais Sorrisos Odontologia"),
+        (r"simioni|simione|marquesin", "Tradição Odontologia"),
+        (r"caio|sorridentes", "Sorridentes"),
+        (r"ribeirão|verde", "Odontomax Ribeirão Verde"),
+        # Dentistas Individuais e Sobrenomes (Tratando variações de escrita)
+        (r"mario", "Dr Mario Gomes"),
+        (r"aline\s+vasconcelos", "Dra Aline Vasconcelos"),
+        (r"dinardo|dinardi|di\s+nardo", "Dr Carlos Dinardo"),
+        (r"callefi|caleffi", "Dr Rafael Caleffi"),
+        (r"yoshikai|yoshikay|yoshykai|yoshykay", "Dr Carlos Alberto Yoshikay"),
+        (r"marisa|cravinhos", "Dra Marisa Catapani"),
+        (r"sandro|leal", "Dr Sandro Leal"),
+        (r"landi|excellent|excelent|eduardo\s+landi", "Dr Eduardo Landi"),
+        (r"juliana|giraldi", "Dra Juliana Giraldi"),
+        (
+            r"isabel|isabela|isabella|dumont|dummont|izabel|izabela|izabella",
+            "Dra Izabella Leonel",
+        ),
+        (r"reginaldo", "Dr Reginaldo Barban"),
+    ]
+
+    # Varre as regras de clientes e aplica o match
+    for padrao, nome_padronizado in regras_clientes:
+        if re.search(padrao, texto):
+            return nome_padronizado
+
+    # Se não cair em nenhuma regra, mantém o Title Case que limpamos antes
+    return str(cliente_original).strip().title()
+
+
 # ==============================================================================
 # DICIONÁRIO DE PADRONIZAÇÃO E LIMPEZA DE TRABALHOS (REGRAS DE NEGÓCIO)
 # ==============================================================================
@@ -57,12 +109,19 @@ def padronizar_trabalhos(descricao_original):
     texto = str(descricao_original).lower().strip()
 
     # 🛑 REGRA DE EXCLUSÃO PRECOCE: Lançamentos financeiros residuais
-    if re.search(r"d[eé]bito|valor", texto):
+    if re.search(
+        r"d[eé]bito|valor|caixa|conta|cr[eé]dito|cpf|nota|pagamento|data|op|pago|juros|cheque|favorecido",
+        texto,
+    ):
         return "EXCLUIR_REGISTRO_FINANCEIRO"
 
     # 🦷 LIMPEZA ANATÔMICA (Stopwords odontológicas de posição/anatomia e plurais)
     # Remove as palavras e os pontos finais colados nelas (ex: "inf." vira "")
-    texto = re.sub(r"\b(molar|superior|inferior|inf|sup|pos|ant)\b\.?", "", texto)
+    texto = re.sub(
+        r"\b(molar|superior|inferior|inf|sup|pos|ant|canino|pr[eé]|lateral|central)\b\.?",
+        "",
+        texto,
+    )
     # Normaliza plurais comuns para o singular no início para facilitar o match
     texto = re.sub(r"\bblocos\b", "bloco", texto)
     texto = re.sub(r"\bcoroas\b", "coroa", texto)
@@ -71,6 +130,8 @@ def padronizar_trabalhos(descricao_original):
 
     # 2. Matriz de regras hierárquicas de negócio
     regras = [
+        # Barra Protocolo
+        (r"barra|s[oó]\s+metal", "Barra Protese Protocolo"),
         # Protocolos e Implantes Específicos
         (
             r"protocolo\s+çer[aâ]mic|protocolo\s+cer[aâ]mic",
@@ -82,7 +143,7 @@ def padronizar_trabalhos(descricao_original):
             "PSI - Coroa Metalocerâmica Sobre Implante",
         ),
         # Componentes e Barras Oring
-        (r"ucla\s*\+\s*parafuso", "Ucla + Parafuso"),
+        (r"ucla\s*\+\s*parafuso|ucla", "Ucla + Parafuso"),
         (r"barra\s+oring", "Barra Oring"),
         # Dissilicato (E-max e variações)
         (
@@ -91,11 +152,11 @@ def padronizar_trabalhos(descricao_original):
         ),
         # Resinas (Blocos e Coroas Fotopolimerizáveis)
         (
-            r"bloco\s+em\s+resina\s+foto|bloco\s+em\s+res\.\s+foto|bloco\s+res\.?\s+foto|bloco\s+resina\s+foto",
+            r"bloco\s+em\s+resina\s+foto|bloco\s+em\s+res\.\s+foto|bloco\s+res\.?\s+foto|bloco\s+resina\s+foto|bloco\s+de+resina",
             "Bloco em Resina Fotopolimerizável",
         ),
         (
-            r"coroa\s+em\s+resina\s+foto|coroa\s+em\s+res\.\s+foto|coroa\s+res\.?\s+foto|coroa\s+resina\s+foto|coroa\s+em\s+resina\s+fotopolimeriz[aá]vel",
+            r"coroa\s+em\s+resina\s+foto|coroa\s+em\s+res\.\s+foto|coroa\s+res\.?\s+foto|coroa\s+resina\s+foto|coroa\s+em\s+resina\s+fotopolimeriz[aá]vel|coroa\s+de+resina+foto",
             "Coroa em Resina Fotopolimerizável",
         ),
         # Pontes e Próteses Removíveis
@@ -104,11 +165,12 @@ def padronizar_trabalhos(descricao_original):
             "Protese Parcial Removivel Provisória",
         ),
         (r"ppr|ponte\s+m[oó]vel|estrutura\s+de", "Protese Parcial Removivel"),
-        (r"fixa|adesiva", "Ponte Fixa Metalocerâmica"),
+        (r"adesiva", "Metalocerâmica Fixa Adesiva"),
+        (r"fixa", "Ponte Fixa Metalocerâmica"),
         # Próteses Totais, Provisórios e Soldas
         (r"dentadura", "Protese Total"),
         (
-            r"provis[oó]rio|provisoriso|jaqueta\s+acril[ií]ca|coroa\s+em\s+resina|coroa\s+res\.?$",
+            r"provis[oó]rio\s|provisoriso\s|provis[oó]ria\s|jaqueta\s+acril[ií]ca|coroa\s+em\s+resina|coroa\s+res\.?$|provisorio|provisorios",
             "Provisório",
         ),
         (r"solda|ponto\s+de\s+solda", "Ponto de Solda"),
@@ -116,11 +178,15 @@ def padronizar_trabalhos(descricao_original):
         (r"fundi[çc][ãa]o\s+de\s+n[uú]cleo|n[uú]cleo", "Fundição de Núcleo"),
         # Coroa Metalocerâmica Geral (Mantido abaixo por ser mais genérico)
         (
-            r"coroa\s+metalocer[aâ]mica|çer[aâ]mica|cer[aâ]mica|metalocer[aâ]mica|coroa\s+resina",
+            r"coroa\s+metalocer[aâ]mica|çer[aâ]mica|cer[aâ]mica|metalocer[aâ]mica|coroa\s+resina|cermica|cermamica|cer[aâ]mic",
             "Coroa Metalocerâmica",
         ),
+        (r"munh[aã]o", "Fundição e Preparo de Munhão"),
         # Placas
-        (r"placa\s+d?e?clareamento", "Placa Clareamento"),
+        (
+            r"placa\s",
+            "Placa de Clareamento em Silicone",
+        ),
     ]
 
     # Aplica as regras de agrupamento por padrão Regex
@@ -155,7 +221,7 @@ def process_to_silver():
         df = pd.read_parquet(path_notes)
         df_silver = pd.DataFrame()
         df_silver["data_entrega"] = pd.to_datetime(df["data_entrega"], errors="coerce")
-        df_silver["cliente_nome"] = _clean_text_column(df["cliente_dentista"])
+        df_silver["cliente_nome"] = df["cliente_dentista"].apply(padronizar_clientes)
         df_silver["paciente_nome"] = _clean_text_column(df["paciente"])
 
         # 🌟 APLICANDO A PADRONIZAÇÃO AQUI
@@ -182,7 +248,7 @@ def process_to_silver():
         df = pd.read_parquet(path_lists)
         df_silver = pd.DataFrame()
         df_silver["data_entrega"] = pd.to_datetime(df["data_entrega"], errors="coerce")
-        df_silver["cliente_nome"] = _clean_text_column(df["cliente_dentista"])
+        df_silver["cliente_nome"] = df["cliente_dentista"].apply(padronizar_clientes)
         df_silver["paciente_nome"] = _clean_text_column(df["paciente"])
 
         # 🌟 APLICANDO A PADRONIZAÇÃO AQUI
@@ -203,7 +269,34 @@ def process_to_silver():
         df_silver["tipo_fonte"] = "Listas CSV"
         silver_dfs.append(df_silver)
 
-    # 2.3 Processando PDFs (IA)
+    # 2.3 Processando Relatórios CSV
+    path_reports = os.path.join(BRONZE_DIR, "raw_reports_csv.parquet")
+    if os.path.exists(path_reports):
+        df = pd.read_parquet(path_reports)
+        df_silver = pd.DataFrame()
+        df_silver["data_entrega"] = pd.to_datetime(df["data_entrega"], errors="coerce")
+        df_silver["cliente_nome"] = df["cliente_dentista"].apply(padronizar_clientes)
+        df_silver["paciente_nome"] = _clean_text_column(df["paciente"])
+
+        # 🌟 APLICANDO A PADRONIZAÇÃO AQUI
+        df_silver["servico_descricao"] = df["servico_trabalho"].apply(
+            padronizar_trabalhos
+        )
+
+        df_silver["quantidade"] = (
+            pd.to_numeric(df["quantidade"], errors="coerce").fillna(1).astype(int)
+        )
+        df_silver["valor_unitario"] = pd.to_numeric(
+            df["valor_unitario"], errors="coerce"
+        ).fillna(0.0)
+        df_silver["valor_total"] = pd.to_numeric(
+            df["valor_total"], errors="coerce"
+        ).fillna(0.0)
+        df_silver["arquivo_origem"] = df["arquivo_origem"]
+        df_silver["tipo_fonte"] = "Listas CSV"
+        silver_dfs.append(df_silver)
+
+    # 2.4 Processando PDFs (IA)
     path_pdfs = os.path.join(BRONZE_DIR, "raw_pdfs_ia.parquet")
     if os.path.exists(path_pdfs):
         df = pd.read_parquet(path_pdfs)
@@ -211,7 +304,7 @@ def process_to_silver():
         df_silver["data_entrega"] = pd.to_datetime(
             df["Data de Entrega"], dayfirst=True, errors="coerce"
         )
-        df_silver["cliente_nome"] = _clean_text_column(df["Cliente (Dentista)"])
+        df_silver["cliente_nome"] = df["Cliente (Dentista)"].apply(padronizar_clientes)
         df_silver["paciente_nome"] = _clean_text_column(df["Paciente"])
 
         # 🌟 APLICANDO A PADRONIZAÇÃO AQUI (Mesmo vindo da IA, garantimos a consistência estrita)
